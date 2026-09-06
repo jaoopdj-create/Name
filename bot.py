@@ -1,182 +1,73 @@
-import sys
-import time
-import traceback
-from datetime import datetime
-import asyncio
-from asyncio import sleep
-from pyrogram import idle, __version__
-from pyrogram.raw.all import layer
-from pyrogram.errors import FloodWait
-from pytz import timezone
-from pathlib import Path
-import importlib.util
-from aiohttp import web
-from PIL import Image
-Image.MAX_IMAGE_PIXELS = 500_000_000
-from database.ia_filterdb import Media, Media2
-from database.users_chats_db import db
-from info import *
-from utils import temp
-from Script import script
-import plugins.cover
-from plugins.route import routes
-from web import techifybots
-from web.clients import initialize_clients
-import logging
-import logging.config
+import os
+import telebot
+import requests
+from bs4 import BeautifulSoup
+import urllib.parse
 
-logging.basicConfig(level=logging.INFO)
-logging.config.fileConfig('logging.conf')
-logging.getLogger().setLevel(logging.INFO)
-logging.getLogger("pyrogram").setLevel(logging.ERROR)
-logging.getLogger("imdbpy").setLevel(logging.ERROR)
-logging.getLogger("aiohttp").setLevel(logging.ERROR)
-logging.getLogger("aiohttp.web").setLevel(logging.ERROR)
-logging.getLogger("pymongo").setLevel(logging.WARNING)
+# Render के Environment Variables से बोट टोकन लेना
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+bot = telebot.TeleBot(BOT_TOKEN)
 
-botStartTime = time.time()
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    bot.reply_to(message, "👋 नमस्ते! मैं एक ऑल-इन-वन मूवी बोट हूँ।\n\nमुझे किसी भी बॉलीवुड, हॉलीवुड या वेब सीरीज का नाम भेजें (जैसे: Jawan, Avatar Hindi, Stranger Things), मैं आपको डाउनलोड लिंक ढूंढ कर दूँगा।")
 
-async def web_server():
-    web_app = web.Application(client_max_size=30000000)
-    web_app.add_routes(routes)
-    return web_app
+@bot.message_handler(func=lambda message: True)
+def search_all_movies(message):
+    query = message.text
+    bot.reply_to(message, f"🔍 '{query}' को इंटरनेट पर ढूंढा जा रहा है, कृपया 5-10 सेकंड का समय दें...")
 
-async def check_expired_premium(client):
-    while 1:
-        data = await db.get_expired(datetime.now())
-        for user in data:
-            user_id = user["id"]
-            await db.remove_premium_access(user_id)
-            try:
-                user = await client.get_users(user_id)
-                await client.send_message(
-                    chat_id=user_id,
-                    text=f"<b>{user.mention},\n\nʏᴏᴜʀ ᴘʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇss ʜᴀs ᴇxᴘɪʀᴇᴅ.\nᴄʜᴇᴄᴋ /plan ᴛᴏ ᴠɪᴇᴡ ᴏᴜʀ ᴄᴜʀʀᴇɴᴛ ᴘʟᴀɴs.</b>"
-                )
-                await client.send_message(PREMIUM_LOGS, text=f"<b>#Premium_Expire\n\nUser name: {user.mention}\nUser id: <code>{user_id}</code>")
-            except Exception as e:
-                print(e)
-            await sleep(0.5)
-        await sleep(1)
-
-async def keep_alive():
-    async with aiohttp.ClientSession() as session:
-        while True:
-            await asyncio.sleep(298)
-            try:
-                async with session.get(URL) as resp:
-                    if resp.status != 200:
-                        logging.warning(f"⚠️ Ping Error! Status: {resp.status}")
-            except Exception as e:
-                logging.error(f"❌ Ping Failed: {e}")
-
-async def ping_server():
-    sleep_time = PING_INTERVAL
-    while True:
-        await asyncio.sleep(sleep_time)
-        try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as session:
-                async with session.get(URL) as resp:
-                    logging.info("Pinged server with response: {}".format(resp.status))
-        except TimeoutError:
-            logging.warning("Couldn't connect to the site URL..!")
-        except Exception:
-            traceback.print_exc()
-
-def techifybots_plugins_handler(app, plugins_dir: str | Path = "plugins", package_name: str = "plugins") -> list[str]:
-    plugins_dir = Path(plugins_dir)
-    loaded_plugins: list[str] = []
-    if not plugins_dir.exists():
-        logging.warning("Plugins Directory '%s' Does Not Exist.", plugins_dir)
-        return loaded_plugins
-    for file in sorted(plugins_dir.rglob("*.py")):
-        if file.name == "__init__.py":
-            continue
-        rel_path = file.relative_to(plugins_dir).with_suffix("")
-        import_path = package_name + ".".join([""] + list(rel_path.parts))
-        try:
-            spec = importlib.util.spec_from_file_location(import_path, file)
-            if spec is None or spec.loader is None:
-                logging.warning("Skipping %s (No Spec/Loader).", file)
-                continue
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            sys.modules[import_path] = module
-            loaded_plugins.append(import_path)
-            short_name = import_path.removeprefix(f"{package_name}.")
-            logging.info("🔌 Loaded plugin: %s", short_name)
-        except Exception:
-            logging.exception("Failed To Import Plugin: %s", import_path)
-    disp = getattr(app, "dispatcher", None)
-    if disp is None:
-        logging.warning("App Has No Dispatcher; Skipping Handler Regroup.")
-        return loaded_plugins
-    if 0 in disp.groups:
-        all_handlers = list(disp.groups[0])
-        for i, handler in enumerate(all_handlers):
-            disp.remove_handler(handler, group=0)
-            disp.add_handler(handler, group=i)
-    else:
-        logging.info("No Handlers In Group 0; Nothing To Regroup.")
-    return loaded_plugins
-
-async def techifybots_start():
-    print('\n\nInitalizing ')
-    await techifybots.start()
-    bot_info = await techifybots.get_me()
-    techifybots.username = bot_info.username
-    await initialize_clients()
-    loaded_plugins = techifybots_plugins_handler(techifybots)
-    if loaded_plugins:
-        logging.info("✅ Plugins Loaded: %d", len(loaded_plugins))
-    else:
-        logging.info("⚠️ No Plugins Loaded.")
-    if ON_HEROKU:
-        asyncio.create_task(ping_server()) 
-    b_users, b_chats = await db.get_banned()
-    temp.BANNED_USERS = b_users
-    temp.BANNED_CHATS = b_chats
-    await Media.ensure_indexes()
-    if MULTIPLE_DB:
-        await Media2.ensure_indexes()
-        print("Multiple Database Mode On. Now Files Will Be Save In Second DB If First DB Is Full")
-    else:
-        print("Single DB Mode On ! Files Will Be Save In First Database")
-    me = await techifybots.get_me()
-    temp.ME = me.id
-    temp.U_NAME = me.username
-    temp.B_NAME = me.first_name
-    temp.B_LINK = me.mention
-    techifybots.username = '@' + me.username
-    techifybots.loop.create_task(check_expired_premium(techifybots))
-    logging.info(f"{me.first_name} with Pyrogram v{__version__} (Layer {layer}) started on {me.username}.")
-    logging.info(LOG_STR)
-    logging.info(script.LOGO)
-    now = datetime.now(timezone("Asia/Kolkata"))
-    await techifybots.send_message(chat_id=LOG_CHANNEL, text=f"**{temp.B_LINK} is restarted!**\n\n📅 Date : `{now.strftime('%d %B, %Y')}`\n⏰ Time : `{now.strftime('%I:%M:%S %p')}`\n🌐 Timezone : `Asia/Kolkata`")
-    for admin_id in ADMINS:
-        try:
-            await techifybots.send_message(chat_id=int(admin_id), text=f"🤖 {temp.B_NAME} Restarted Successfully ✅")
-        except Exception as e:
-            logging.warning(f"Couldn't send restart message to admin {admin_id}: {e}")
-    app = web.AppRunner(await web_server())
-    await app.setup()
-    bind_address = "0.0.0.0"
-    await web.TCPSite(app, bind_address, PORT).start()
-    techifybots.loop.create_task(keep_alive())
-    await idle()
+    # 1337x टॉरेंट साइट को सर्च करने के लिए URL बनाना
+    encoded_query = urllib.parse.quote(query)
+    search_url = f"https://1337x.to{encoded_query}/1/"
     
-if __name__ == '__main__':
-    loop = asyncio.get_event_loop()
-    while True:
-        try:
-            loop.run_until_complete(techifybots_start())
-            break  
-        except FloodWait as e:
-            print(f"FloodWait! Sleeping for {e.value} seconds.")
-            time.sleep(e.value) 
-        except KeyboardInterrupt:
-            logging.info('Service Stopped Bye 👋')
-            break
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+
+    try:
+        res = requests.get(search_url, headers=headers, timeout=10)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # सर्च रिजल्ट्स से पहली 4 मूवीज की डिटेल्स निकालना
+        rows = soup.select('table.table-list tbody tr')
+        
+        if not rows:
+            bot.reply_to(message, "❌ माफ़ कीजिये, इस नाम की कोई मूवी या सीरीज नहीं मिली। कृपया सही स्पेलिंग के साथ दोबारा कोशिश करें।")
+            return
+
+        response_text = f"🎬 *'{query}' के लिए मिले बेस्ट डाउनलोड लिंक्स:*\n\n"
+        
+        for row in rows[:4]:
+            name_element = row.select_one('td.coll-1 a:nth-of-type(2)')
+            seeds = row.select_one('td.coll-2').text if row.select_one('td.coll-2') else "N/A"
+            size_element = row.select_one('td.coll-4')
+            size = size_element.text if size_element else "N/A"
+            
+            if name_element:
+                movie_title = name_element.text
+                movie_href = name_element['href']
+                
+                # मूवी के अंदर जाकर मैग्नेट लिंक निकालना
+                movie_page_url = f"https://1337x.to{movie_href}"
+                movie_res = requests.get(movie_page_url, headers=headers, timeout=10)
+                movie_soup = BeautifulSoup(movie_res.text, 'html.parser')
+                
+                magnet_element = movie_soup.select_one('a[href^="magnet:"]')
+                if magnet_element:
+                    magnet_link = magnet_element['href']
+                    
+                    # रिस्पॉन्स पैकेज तैयार करना
+                    response_text += f"📦 *{movie_title}*\n"
+                    response_text += f"⚖️ साइज: {size} | ⚡ स्पीड: {seeds} Seeds\n"
+                    response_text += f"🧲 [यहाँ क्लिक करके डाउनलोड करें (Magnet Link)]({magnet_link})\n\n"
+
+        bot.send_message(message.chat.id, response_text, parse_mode="Markdown", disable_web_page_preview=True)
+
+    except Exception as e:
+        bot.reply_to(message, "⚠️ सर्वर पर ज्यादा ट्रैफिक होने के कारण कनेक्शन टूट गया। कृपया एक बार फिर प्रयास करें।")
+
+# बोट पोलिंग शुरू करना
+if __name__ == "__main__":
+    bot.infinity_polling()
+        
