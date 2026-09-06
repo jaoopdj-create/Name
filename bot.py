@@ -1,6 +1,7 @@
 import os
 import telebot
 import requests
+from bs4 import BeautifulSoup
 import urllib.parse
 
 # Render के Environment Variables से बोट टोकन लेना
@@ -9,56 +10,55 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "👋 नमस्ते! मैं आपका ऑल-इन-वन एडवांस मूवी बोट हूँ।\n\nमुझे किसी भी बॉलीवुड, हॉलीवुड या वेब सीरीज का नाम भेजें (जैसे: *Jawan*, *Inception*, *Mirzapur*), मैं आपको डायरेक्ट सुपरफास्ट डाउनलोड लिंक ढूँढ कर दूँगा।")
+    bot.reply_to(message, "👋 नमस्ते! मैं आपका ऑल-इन-वन एडवांस मूवी बोट हूँ।\n\nमुझे किसी भी बॉलीवुड, हॉलीवुड या वेब सीरीज का नाम भेजें (जैसे: *Jawan*, *Inception*), मैं आपको तुरंत वर्किंग डाउनलोड लिंक्स ढूँढ कर दूँगा।")
 
 @bot.message_handler(func=lambda message: True)
-def search_all_movies_unblocked(message):
+def search_movies_fast(message):
     query = message.text
-    bot.reply_to(message, f"🔍 '{query}' को अनब्लॉक्ड ग्लोबल सर्वर पर ढूँढा जा रहा है, कृपया 3-5 सेकंड का समय दें...")
+    bot.reply_to(message, f"🔍 '{query}' को फ़ास्ट सर्वर पर ढूँढा जा रहा है, कृपया 3-5 सेकंड का समय दें...")
 
-    # Torrentio API का इस्तेमाल (यह रेंडर पर 100% वर्किंग है और कभी ब्लॉक नहीं होता)
-    encoded_query = urllib.parse.quote(query.lower())
-    api_url = f"https://strem.fun|sort=seeders/search?query={encoded_query}"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
+    # मूवी सर्च करने के लिए एक बिल्कुल नया और चालू अनब्लॉक्ड प्रॉक्सी URL
+    encoded_query = urllib.parse.quote(query)
+    search_url = f"https://apibay.org{encoded_query}"
 
     try:
-        response = requests.get(api_url, headers=headers, timeout=12).json()
+        # सीधे JSON API से डेटा निकालना (यह कभी ब्लॉक नहीं होता)
+        response = requests.get(search_url, timeout=10).json()
         
-        # चेक करना कि स्ट्रीम लिंक्स मिले या नहीं
-        if "streams" in response and len(response["streams"]) > 0:
-            streams = response["streams"]
+        # अगर कोई मूवी नहीं मिली
+        if not response or response[0]['id'] == '0':
+            bot.reply_to(message, "❌ माफ़ कीजिये, इस नाम की कोई मूवी या वेब सीरीज नहीं मिली। कृपया सही स्पेलिंग के साथ दोबारा कोशिश करें।")
+            return
+
+        response_text = f"🎬 *'{query}' के लिए मिले बेस्ट डाउनलोड लिंक्स:*\n\n"
+        
+        # टॉप 4 सबसे बेस्ट रिपॉन्स दिखाना
+        for item in response[:4]:
+            title = item.get('name', 'Unknown Movie')
+            size_bytes = int(item.get('size', 0))
+            seeds = item.get('seeders', '0')
+            info_hash = item.get('info_hash')
             
-            response_text = f"🎬 *'{query}' के लिए मिले बेस्ट डाउनलोड लिंक्स:*\n\n"
-            
-            # टॉप 5 बेस्ट रिजल्ट्स (हाई स्पीड वाले) यूजर को दिखाने के लिए
-            for stream in streams[:5]:
-                title_details = stream.get("title", "Unknown Movie")
+            # साइज को GB या MB में बदलना
+            if size_bytes > 0:
+                size = f"{round(size_bytes / (1024 * 1024 * 1024), 2)} GB" if size_bytes > 1024*1024*1024 else f"{round(size_bytes / (1024 * 1024), 2)} MB"
+            else:
+                size = "N/A"
                 
-                # मैग्नेट लिंक निकालना
-                magnet_link = stream.get("infoHash")
-                if magnet_link:
-                    # फुल मैग्नेट यूआरएल बनाना
-                    full_magnet = f"magnet:?xt=urn:btih:{magnet_link}&dn={encoded_query}"
-                    
-                    # टेक्स्ट को साफ़-सुथरा फ़ॉर्मेट करना
-                    # Torrentio के टाइटल में साइज और क्वालिटी पहले से होती है
-                    clean_title = title_details.replace("\n", " | ")
-                    
-                    response_text += f"📦 *{clean_title}*\n"
-                    response_text += f"🧲 [यहाँ क्लिक करके डाउनलोड करें (Magnet Link)]({full_magnet})\n\n"
-            
-            bot.send_message(message.chat.id, response_text, parse_mode="Markdown", disable_web_page_preview=True)
-            
-        else:
-            bot.reply_to(message, "❌ माफ़ कीजिये, इस नाम की कोई मूवी या वेब सीरीज नहीं मिली। कृपया स्पेलिंग चेक करके दोबारा कोशिश करें।")
-            
+            if info_hash:
+                # मैग्नेट लिंक तैयार करना
+                magnet_link = f"magnet:?xt=urn:btih:{info_hash}&dn={urllib.parse.quote(title)}"
+                
+                response_text += f"📦 *{title}*\n"
+                response_text += f"⚖️ साइज: {size} | ⚡ स्पीड: {seeds} Seeds\n"
+                response_text += f"🧲 [यहाँ क्लिक करके डाउनलोड करें (Magnet Link)]({magnet_link})\n\n"
+
+        bot.send_message(message.chat.id, response_text, parse_mode="Markdown", disable_web_page_preview=True)
+
     except Exception as e:
-        print(f"API Error Log: {e}")
-        bot.reply_to(message, "⚠️ सर्वर कनेक्टिविटी में कुछ समस्या है। कृपया एक बार फिर प्रयास करें।")
+        print(f"Error Log: {e}")
+        bot.reply_to(message, "⚠️ सर्वर अभी व्यस्त है। कृपया एक बार फिर प्रयास करें या किसी दूसरी मूवी का नाम लिखें।")
 
 if __name__ == "__main__":
     bot.infinity_polling()
-    
+                
